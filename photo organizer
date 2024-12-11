@@ -1,0 +1,206 @@
+import os
+import shutil
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from tkinter import ttk
+from tkinter.ttk import Progressbar, Separator, LabelFrame
+import piexif
+import threading
+import time
+import glob
+from datetime import datetime
+
+
+def set_theme_and_style():
+    style = ttk.Style()
+    if os.name == 'darwin':  # macOS
+        style.theme_use('aqua')
+    elif os.name == 'nt':    # Windows
+        style.theme_use('vista')
+    else:                    # Linux and others
+        style.theme_use('clam')
+
+
+# Function to get the creation date from EXIF data
+def get_creation_date(file_path):
+    try:
+        exif_data = piexif.load(file_path)
+        if piexif.ImageIFD.DateTime in exif_data["0th"]:
+            creation_date = exif_data["0th"][piexif.ImageIFD.DateTime].decode("utf-8")
+            return datetime.strptime(creation_date, '%Y:%m:%d %H:%M:%S')
+    except Exception as e:
+        print(f"Error reading EXIF data from {file_path}: {e}")
+    return None
+
+
+# Function to copy files and organize them by date
+def transfer_files(src_folder, dest_folder, cancel_flag, skipped_files, copied_files, total_files, update_ui):
+    arw_files = glob.glob(os.path.join(src_folder, '**', '*.ARW'), recursive=True)
+    total_files[0] = len(arw_files)
+
+    for index, file_path in enumerate(arw_files, start=1):
+        if cancel_flag[0]:
+            break
+
+        creation_date = get_creation_date(file_path)
+        if creation_date:
+            year_folder = os.path.join(dest_folder, str(creation_date.year))
+            month_folder = os.path.join(year_folder, f"{creation_date.month:02d}")
+            day_folder = os.path.join(month_folder, f"{creation_date.day:02d}")
+
+            os.makedirs(day_folder, exist_ok=True)
+
+            if not check_duplicate(file_path, day_folder):
+                try:
+                    shutil.copy2(file_path, day_folder)
+                    copied_files[0] += 1
+                except Exception as e:
+                    print(f"Error copying {file_path} to {day_folder}: {e}")
+            else:
+                skipped_files[0] += 1
+
+        update_ui(index)
+        time.sleep(0.1)
+
+    if cancel_flag[0]:
+        messagebox.showinfo("File Transfer", "File transfer was canceled.")
+    else:
+        messagebox.showinfo("File Transfer", f"File transfer completed! Skipped {skipped_files[0]} duplicate files.")
+
+
+# Function to check for duplicate files in the destination folder
+def check_duplicate(src_file, dest_folder):
+    src_filename = os.path.basename(src_file)
+    for root, dirs, files in os.walk(dest_folder):
+        if src_filename in files:
+            return True
+    return False
+
+
+# Function to handle cancel action
+def cancel_transfer(cancel_flag):
+    cancel_flag[0] = True
+
+
+# Function to start the file transfer in a separate thread
+def start_transfer(src_folder, dest_folder, cancel_flag, skipped_files, copied_files, total_files, update_ui):
+    transfer_thread = threading.Thread(
+        target=transfer_files,
+        args=(src_folder, dest_folder, cancel_flag, skipped_files, copied_files, total_files, update_ui),
+    )
+    transfer_thread.start()
+    return transfer_thread
+
+
+# Main GUI class
+class FileTransferApp:
+    def __init__(self, root):
+        set_theme_and_style()
+        self.root = root
+        self.root.title("Photo Organizer")
+        self.root.geometry("500x350")
+        self.root.resizable(False, False)
+
+        self.src_folder = ""
+        self.dest_folder = ""
+
+        self.cancel_flag = [False]
+        self.skipped_files = [0]
+        self.copied_files = [0]
+        self.total_files = [0]
+
+        # Progress Bar - Updated styling
+        progress_frame = LabelFrame(root, text="Progress")
+        progress_frame.pack(padx=10, pady=10, fill=tk.X)
+        
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = Progressbar(
+            progress_frame, 
+            variable=self.progress_var, 
+            maximum=100,
+            mode='determinate',
+            length=400
+        )
+        self.progress_bar.pack(pady=10, padx=10, fill=tk.X)
+        
+        self.progress_label = tk.Label(progress_frame, text="0%")
+        self.progress_label.pack()
+
+        # Source and Destination Section
+        folder_frame = LabelFrame(root, text="Folders")
+        folder_frame.pack(padx=10, pady=10, fill=tk.X)
+
+        tk.Label(folder_frame, text="Source Folder:").grid(row=0, column=0, sticky="w")
+        self.src_button = tk.Button(folder_frame, text="source", command=self.select_source_folder)
+        self.src_button.grid(row=0, column=1, padx=5, pady=5)
+        self.src_label = tk.Label(folder_frame, text="Not Selected", anchor="w", width=40)
+        self.src_label.grid(row=0, column=2, padx=5)
+
+        tk.Label(folder_frame, text="Destination Folder:").grid(row=1, column=0, sticky="w")
+        self.dest_button = tk.Button(folder_frame, text="destination", command=self.select_dest_folder)
+        self.dest_button.grid(row=1, column=1, padx=5, pady=5)
+        self.dest_label = tk.Label(folder_frame, text="Not Selected", anchor="w", width=40)
+        self.dest_label.grid(row=1, column=2, padx=5)
+
+        # File Information Section
+        file_info_frame = LabelFrame(root, text="File Information")
+        file_info_frame.pack(padx=10, pady=10, fill=tk.X)
+
+        self.skipped_label = tk.Label(file_info_frame, text="Skipped Files: 0")
+        self.skipped_label.grid(row=0, column=0, sticky="w")
+        self.copied_label = tk.Label(file_info_frame, text="Copied Files: 0")
+        self.copied_label.grid(row=0, column=1, sticky="w")
+        self.total_label = tk.Label(file_info_frame, text="Total Files: 0")
+        self.total_label.grid(row=0, column=2, sticky="w")
+
+        # Action Buttons Section
+        action_frame = tk.Frame(root)
+        action_frame.pack(pady=10)
+
+        self.start_button = tk.Button(action_frame, text="Start Transfer", command=self.start_transfer, state=tk.DISABLED)
+        self.start_button.grid(row=0, column=0, padx=10)
+
+        self.cancel_button = tk.Button(action_frame, text="Cancel", command=lambda: cancel_transfer(self.cancel_flag), state=tk.DISABLED)
+        self.cancel_button.grid(row=0, column=1, padx=10)
+
+    def select_source_folder(self):
+        self.src_folder = filedialog.askdirectory(title="Select Source Folder")
+        if self.src_folder:
+            self.src_label.config(text=self.src_folder)
+            self.check_ready_to_start()
+
+    def select_dest_folder(self):
+        self.dest_folder = filedialog.askdirectory(title="Select Destination Folder")
+        if self.dest_folder:
+            self.dest_label.config(text=self.dest_folder)
+            self.check_ready_to_start()
+
+    def check_ready_to_start(self):
+        if self.src_folder and self.dest_folder:
+            self.start_button.config(state=tk.NORMAL)
+
+    def start_transfer(self):
+        self.cancel_flag[0] = False
+        self.skipped_files[0] = 0
+        self.copied_files[0] = 0
+        self.total_files[0] = 0
+        self.progress_var.set(0)
+        self.start_button.config(state=tk.DISABLED)
+        self.cancel_button.config(state=tk.NORMAL)
+
+        def update_ui(current_index):
+            self.skipped_label.config(text=f"Skipped Files: {self.skipped_files[0]}")
+            self.copied_label.config(text=f"Copied Files: {self.copied_files[0]}")
+            self.total_label.config(text=f"Total Files: {self.total_files[0]}")
+            progress = (current_index / self.total_files[0]) * 100 if self.total_files[0] else 0
+            self.progress_var.set(progress)
+            self.progress_label.config(text=f"{progress:.1f}%")
+            self.root.update_idletasks()
+
+        start_transfer(self.src_folder, self.dest_folder, self.cancel_flag, self.skipped_files, self.copied_files, self.total_files, update_ui)
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = FileTransferApp(root)
+    root.mainloop()
